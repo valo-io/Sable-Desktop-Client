@@ -161,7 +161,7 @@ jobs:
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
           Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
           # Build for armeabi-v7a
-          pnpm tauri android build --target armeabi-v7a
+          pnpm tauri android build --target armv7
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
@@ -189,7 +189,7 @@ jobs:
           $json.identifier = "${{ inputs.app_id }}"
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
           Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
-          pnpm tauri android build --target arm64-v8a
+          pnpm tauri android build --target aarch64
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
