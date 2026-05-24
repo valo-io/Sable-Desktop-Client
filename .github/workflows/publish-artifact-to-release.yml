@@ -1,0 +1,57 @@
+name: Publish Artifact to Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'ID of the workflow run that produced the artifact'
+        required: true
+        type: number
+      artifact_name:
+        description: 'Name of the artifact (default: sable-windows-installer)'
+        required: false
+        default: 'sable-windows-installer'
+        type: string
+      tag_name:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_title:
+        description: 'Release title'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark as pre-release?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Needed to create releases
+      actions: read     # Needed to download artifacts
+
+    steps:
+      - name: Download artifact from workflow run
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ./artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: List downloaded files (debug)
+        run: ls -la ./artifact
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: ${{ inputs.release_title || inputs.tag_name }}
+          prerelease: ${{ inputs.prerelease }}
+          files: ./artifact/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
