@@ -150,13 +150,16 @@ jobs:
         if: inputs.build_android_armv7 == true
         id: build_android_armv7
         continue-on-error: true
+        shell: pwsh
         run: |
-          # Override app version and ID in tauri.conf.json temporarily
           $conf = "src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
+          # Set version and Android identifier
           $json.version = "${{ inputs.version }}"
-          $json.app.windows[0].label = "${{ inputs.app_id }}"
+          $json.identifier = "${{ inputs.app_id }}"
+          # Save back
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
           # Build for armeabi-v7a
           pnpm tauri android build --target armeabi-v7a
         env:
@@ -178,12 +181,14 @@ jobs:
         if: inputs.build_android_armv8 == true
         id: build_android_armv8
         continue-on-error: true
+        shell: pwsh
         run: |
           $conf = "src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
           $json.version = "${{ inputs.version }}"
-          $json.app.windows[0].label = "${{ inputs.app_id }}"
+          $json.identifier = "${{ inputs.app_id }}"
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
           pnpm tauri android build --target arm64-v8a
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
