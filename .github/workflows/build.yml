@@ -1,0 +1,222 @@
+name: Build Multi‑Arch Windows + Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'App version (e.g., 1.17.0)'
+        required: true
+        default: '1.17.0'
+        type: string
+      app_id:
+        description: 'Android application ID'
+        required: true
+        default: 'com.valo.sable'
+        type: string
+      build_windows_x64:
+        description: 'Build Windows x64'
+        required: false
+        default: true
+        type: boolean
+      build_windows_arm64:
+        description: 'Build Windows ARM64'
+        required: false
+        default: false
+        type: boolean
+      build_android_armv7:
+        description: 'Build Android ARMv7 (32‑bit)'
+        required: false
+        default: true
+        type: boolean
+      build_android_armv8:
+        description: 'Build Android ARMv8 (64‑bit)'
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Mark release as pre‑release?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # to create release and upload files
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Setup Node, pnpm, Rust, Tauri CLI ---
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          override: true
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # --- Add Windows ARM64 Rust target if needed ---
+      - name: Add Windows ARM64 Rust target
+        if: inputs.build_windows_arm64 == true
+        run: rustup target add aarch64-pc-windows-msvc
+
+      # --- Prepare Android signing (if any Android build selected) ---
+      - name: Prepare Android keystore
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if (-not $env:KEYSTORE_BASE64) {
+            Write-Host "::error::Missing ANDROID_KEYSTORE_BASE64 secret"
+            exit 1
+          }
+          $keystorePath = "$env:USERPROFILE\.android\debug.keystore"
+          New-Item -ItemType Directory -Force -Path (Split-Path $keystorePath) | Out-Null
+          [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          echo "KEYSTORE_PATH=$keystorePath" >> $env:GITHUB_ENV
+          echo "KEYSTORE_PASSWORD=$env:KEYSTORE_PASSWORD" >> $env:GITHUB_ENV
+          echo "KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
+          echo "KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
+
+      # --- Build Windows x64 ---
+      - name: Build Windows x64
+        if: inputs.build_windows_x64 == true
+        id: build_win_x64
+        continue-on-error: true
+        run: pnpm tauri build
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Upload Windows x64 artifact (if succeeded)
+        if: steps.build_win_x64.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-windows-x64
+          path: src-tauri/target/release/bundle/msi/*.msi
+
+      # --- Build Windows ARM64 ---
+      - name: Build Windows ARM64
+        if: inputs.build_windows_arm64 == true
+        id: build_win_arm64
+        continue-on-error: true
+        run: pnpm tauri build --target aarch64-pc-windows-msvc
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Upload Windows ARM64 artifact (if succeeded)
+        if: steps.build_win_arm64.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-windows-arm64
+          path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+
+      # --- Android: prepare environment (SDK, NDK) ---
+      - name: Setup Android SDK & NDK
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        uses: android-actions/setup-android@v3
+
+      - name: Initialize Tauri Android project (if needed)
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        run: |
+          if (-not (Test-Path "src-tauri/gen/android")) {
+            pnpm tauri android init
+          }
+
+      # --- Build Android ARMv7 ---
+      - name: Build Android ARMv7
+        if: inputs.build_android_armv7 == true
+        id: build_android_armv7
+        continue-on-error: true
+        run: |
+          # Override app version and ID in tauri.conf.json temporarily
+          $conf = "src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          $json.version = "${{ inputs.version }}"
+          $json.app.windows[0].label = "${{ inputs.app_id }}"
+          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          # Build for armeabi-v7a
+          pnpm tauri android build --target armeabi-v7a
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
+
+      - name: Upload Android ARMv7 APK (if succeeded)
+        if: steps.build_android_armv7.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-android-armv7
+          path: src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
+
+      # --- Build Android ARMv8 ---
+      - name: Build Android ARMv8
+        if: inputs.build_android_armv8 == true
+        id: build_android_armv8
+        continue-on-error: true
+        run: |
+          $conf = "src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          $json.version = "${{ inputs.version }}"
+          $json.app.windows[0].label = "${{ inputs.app_id }}"
+          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          pnpm tauri android build --target arm64-v8a
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
+
+      - name: Upload Android ARMv8 APK (if succeeded)
+        if: steps.build_android_armv8.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-android-armv8
+          path: src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
+
+      # --- Create GitHub Release with all successful artifacts ---
+      - name: Collect all artifacts into one folder
+        run: |
+          mkdir release_artifacts
+          # Copy only files from uploaded artifacts (they are in separate folders)
+          if (Test-Path "sable-windows-x64") { Copy-Item "sable-windows-x64/*.msi" release_artifacts/ -ErrorAction SilentlyContinue }
+          if (Test-Path "sable-windows-arm64") { Copy-Item "sable-windows-arm64/*.msi" release_artifacts/ -ErrorAction SilentlyContinue }
+          if (Test-Path "sable-android-armv7") { Copy-Item "sable-android-armv7/*.apk" release_artifacts/ -ErrorAction SilentlyContinue }
+          if (Test-Path "sable-android-armv8") { Copy-Item "sable-android-armv8/*.apk" release_artifacts/ -ErrorAction SilentlyContinue }
+          ls release_artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}-nightly-${{ github.run_number }}
+          name: "Version ${{ inputs.version }} – Build ${{ github.run_number }}"
+          prerelease: ${{ inputs.prerelease }}
+          files: release_artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
