@@ -43,7 +43,7 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write   # to create release and upload files
+      contents: write
       actions: read
 
     steps:
@@ -78,7 +78,7 @@ jobs:
         if: inputs.build_windows_arm64 == true
         run: rustup target add aarch64-pc-windows-msvc
 
-      # --- Prepare Android signing (if any Android build selected) ---
+      # --- Prepare Android keystore (if any Android build selected) ---
       - name: Prepare Android keystore
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         env:
@@ -99,6 +99,24 @@ jobs:
           echo "KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
           echo "KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
 
+      # --- Configure Tauri for Android signing (if Android builds enabled) ---
+      - name: Configure Android signing in tauri.conf.json
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        shell: pwsh
+        run: |
+          $conf = "src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          # Add or update Android signing config
+          if (-not $json.tauri.bundle.android) { $json.tauri.bundle.android = @{} }
+          $json.tauri.bundle.android.signing = @{
+            keystorePath = "$env:KEYSTORE_PATH"
+            keystorePassword = "$env:KEYSTORE_PASSWORD"
+            keyAlias = "$env:KEY_ALIAS"
+            keyPassword = "$env:KEY_PASSWORD"
+          }
+          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          Write-Host "Added Android signing config to tauri.conf.json"
+
       # --- Build Windows x64 ---
       - name: Build Windows x64
         if: inputs.build_windows_x64 == true
@@ -109,12 +127,11 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      - name: Upload Windows x64 artifact (if succeeded)
+      - name: Copy Windows x64 build to release folder
         if: steps.build_win_x64.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sable-windows-x64
-          path: src-tauri/target/release/bundle/msi/*.msi
+        run: |
+          New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/msi/*.msi" release_artifacts/ -ErrorAction SilentlyContinue
 
       # --- Build Windows ARM64 ---
       - name: Build Windows ARM64
@@ -126,68 +143,54 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      - name: Upload Windows ARM64 artifact (if succeeded)
+      - name: Copy Windows ARM64 build to release folder
         if: steps.build_win_arm64.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sable-windows-arm64
-          path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+        run: |
+          New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
+          Copy-Item "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi" release_artifacts/ -ErrorAction SilentlyContinue
 
-      # --- Android: prepare environment (SDK, NDK) ---
+      # --- Android: Setup SDK/NDK and initialise project with correct identifier ---
       - name: Setup Android SDK & NDK
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         uses: android-actions/setup-android@v3
 
-      - name: Initialize Tauri Android project (if needed)
-        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
-        run: |
-          if (-not (Test-Path "src-tauri/gen/android")) {
-            pnpm tauri android init
-          }
-
-      - name: Regenerate Android project with correct identifier
+      - name: Regenerate Android project with correct identifier and signing
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         shell: pwsh
         run: |
-          # Update tauri.conf.json with version and identifier
+          # Update tauri.conf.json version and identifier
           $conf = "src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
           $json.version = "${{ inputs.version }}"
           $json.identifier = "${{ inputs.app_id }}"
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
           Write-Host "Set version=$($json.version), identifier=$($json.identifier)"
-      
-          # Delete old Android project if it exists
+
+          # Delete old Android project
           if (Test-Path "src-tauri/gen/android") {
             Remove-Item -Recurse -Force "src-tauri/gen/android"
             Write-Host "Removed old gen/android"
           }
-      
-          # Initialize fresh Android project
+
+          # Re-initialise Android project (will pick up signing config from tauri.conf.json)
           pnpm tauri android init
-          Write-Host "Android project re-initialized"
-          
+          Write-Host "Android project re-initialized with signing config"
+
       # --- Build Android ARMv7 ---
       - name: Build Android ARMv7
         if: inputs.build_android_armv7 == true
         id: build_android_armv7
         continue-on-error: true
         shell: pwsh
-        run: |
-          pnpm tauri android build --target armv7
+        run: pnpm tauri android build --target armv7
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
-          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ env.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
 
-      - name: Upload Android ARMv7 APK (if succeeded)
+      - name: Copy Android ARMv7 APK to release folder
         if: steps.build_android_armv7.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sable-android-armv7
-          path: src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
+        run: |
+          New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
+          Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
 
       # --- Build Android ARMv8 ---
       - name: Build Android ARMv8
@@ -195,32 +198,25 @@ jobs:
         id: build_android_armv8
         continue-on-error: true
         shell: pwsh
-        run: |
-          pnpm tauri android build --target aarch64
+        run: pnpm tauri android build --target aarch64
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
-          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ env.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
 
-      - name: Upload Android ARMv8 APK (if succeeded)
+      - name: Copy Android ARMv8 APK to release folder
         if: steps.build_android_armv8.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sable-android-armv8
-          path: src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
+        run: |
+          New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
+          Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
 
       # --- Create GitHub Release with all successful artifacts ---
-      - name: Collect all artifacts into one folder
+      - name: List collected artifacts
         run: |
-          mkdir release_artifacts
-          # Copy only files from uploaded artifacts (they are in separate folders)
-          if (Test-Path "sable-windows-x64") { Copy-Item "sable-windows-x64/*.msi" release_artifacts/ -ErrorAction SilentlyContinue }
-          if (Test-Path "sable-windows-arm64") { Copy-Item "sable-windows-arm64/*.msi" release_artifacts/ -ErrorAction SilentlyContinue }
-          if (Test-Path "sable-android-armv7") { Copy-Item "sable-android-armv7/*.apk" release_artifacts/ -ErrorAction SilentlyContinue }
-          if (Test-Path "sable-android-armv8") { Copy-Item "sable-android-armv8/*.apk" release_artifacts/ -ErrorAction SilentlyContinue }
-          ls release_artifacts
+          if (Test-Path release_artifacts) {
+            Write-Host "Artifacts found:"
+            Get-ChildItem release_artifacts
+          } else {
+            Write-Host "No artifacts were built."
+          }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
