@@ -4,14 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'ID of the workflow run that produced the artifact'
+        description: 'ID of the workflow run that produced the artifacts'
         required: true
         type: number
-      artifact_name:
-        description: 'Name of the artifact (default: sable-windows-installer)'
-        required: false
-        default: 'sable-windows-installer'
-        type: string
       tag_name:
         description: 'Release tag (e.g., v1.0.0)'
         required: true
@@ -34,16 +29,16 @@ jobs:
       actions: read     # Needed to download artifacts
 
     steps:
-      - name: Download artifact from workflow run
+      - name: Download all artifacts from workflow run
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.artifact_name }}
-          path: ./artifact
+          pattern: '*'                     # Download every artifact from the run
+          path: ./artifacts                # Each artifact goes into its own subfolder
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.run_id }}
 
       - name: List downloaded files (debug)
-        run: ls -la ./artifact
+        run: ls -laR ./artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -51,7 +46,7 @@ jobs:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.release_title || inputs.tag_name }}
           prerelease: ${{ inputs.prerelease }}
-          files: ./artifact/*
+          files: ./artifacts/**/*          # Upload all files from all artifacts
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
