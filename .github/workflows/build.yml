@@ -223,7 +223,9 @@ jobs:
         if: steps.build_android_armv7.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
-          Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
+          Get-ChildItem "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" | ForEach-Object {
+            Copy-Item $_.FullName "release_artifacts/armv7-$($_.Name)"
+          }
 
       # -------------------- Android ARMv8 --------------------
       - name: Build Android ARMv8
@@ -237,7 +239,9 @@ jobs:
         if: steps.build_android_armv8.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
-          Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
+          Get-ChildItem "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" | ForEach-Object {
+            Copy-Item $_.FullName "release_artifacts/aarch64-$($_.Name)"
+          }
 
       # -------------------- Release --------------------
       - name: List collected artifacts
