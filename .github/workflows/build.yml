@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # --- Setup Node, pnpm, Rust, Tauri CLI ---
+      # -------------------- Common tools --------------------
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
@@ -67,18 +67,18 @@ jobs:
           target: x86_64-pc-windows-msvc
           override: true
 
-      - name: Install Tauri CLI
+      - name: Install Tauri CLI (Rust binary, optional)
         run: cargo install tauri-cli
 
       - name: Install dependencies
         run: pnpm install
 
-      # --- Add Windows ARM64 Rust target if needed ---
+      # Add Windows ARM64 target if needed
       - name: Add Windows ARM64 Rust target
         if: inputs.build_windows_arm64 == true
         run: rustup target add aarch64-pc-windows-msvc
 
-      # --- Build Windows x64 ---
+      # -------------------- Windows x64 --------------------
       - name: Build Windows x64
         if: inputs.build_windows_x64 == true
         id: build_win_x64
@@ -88,13 +88,13 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      - name: Copy Windows x64 build to release folder
+      - name: Copy Windows x64 build
         if: steps.build_win_x64.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
           Copy-Item "src-tauri/target/release/bundle/msi/*.msi" release_artifacts/ -ErrorAction SilentlyContinue
 
-      # --- Build Windows ARM64 ---
+      # -------------------- Windows ARM64 --------------------
       - name: Build Windows ARM64
         if: inputs.build_windows_arm64 == true
         id: build_win_arm64
@@ -104,19 +104,19 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      - name: Copy Windows ARM64 build to release folder
+      - name: Copy Windows ARM64 build
         if: steps.build_win_arm64.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
           Copy-Item "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi" release_artifacts/ -ErrorAction SilentlyContinue
 
-      # --- Android: Setup SDK/NDK and initialise project with correct identifier ---
+      # -------------------- Android setup (only if any Android arch is selected) --------------------
       - name: Setup Android SDK & NDK
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         uses: android-actions/setup-android@v3
-        
-      # --- Prepare Android keystore (if any Android build selected) ---
-      - name: Prepare Android keystore
+
+      # Prepare keystore and export Tauri‑recognised signing env vars
+      - name: Prepare Android keystore & signing env vars
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -128,62 +128,34 @@ jobs:
             Write-Host "::error::Missing ANDROID_KEYSTORE_BASE64 secret"
             exit 1
           }
+
           $keystorePath = "$env:USERPROFILE\.android\debug.keystore"
           New-Item -ItemType Directory -Force -Path (Split-Path $keystorePath) | Out-Null
           [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+
+          # Export the signing configuration using the environment variables Tauri 2 recognises
+          echo "TAURI_ANDROID_KEYSTORE_PATH=$keystorePath" >> $env:GITHUB_ENV
+          echo "TAURI_ANDROID_KEYSTORE_PASSWORD=$env:KEYSTORE_PASSWORD" >> $env:GITHUB_ENV
+          echo "TAURI_ANDROID_KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
+          echo "TAURI_ANDROID_KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
+
+          # Keep the generic names if you need them elsewhere (optional)
           echo "KEYSTORE_PATH=$keystorePath" >> $env:GITHUB_ENV
-          echo "KEYSTORE_PASSWORD=$env:KEYSTORE_PASSWORD" >> $env:GITHUB_ENV
-          echo "KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
-          echo "KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
 
-      # --- Configure Android signing in tauri.conf.json (top-level bundle.android.signing) ---
-      - name: Configure Android signing in tauri.conf.json
+      # Initialise Android project (if not already present)
+      - name: Initialise Tauri Android project
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        run: |
+          if (-not (Test-Path "src-tauri/gen/android")) {
+            pnpm tauri android init
+          }
+
+      # Update config with version/identifier and regenerate Android project (no signing config in JSON)
+      - name: Regenerate Android project with correct identifier
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         shell: pwsh
         run: |
-          $conf = "src-tauri/tauri.conf.json"
-          $json = Get-Content $conf -Raw | ConvertFrom-Json
-
-          # Ensure the path bundle -> android exists (top-level)
-          if ($null -eq $json.bundle) {
-            $json | Add-Member -MemberType NoteProperty -Name 'bundle' -Value @{}
-          }
-          if ($null -eq $json.bundle.android) {
-            $json.bundle | Add-Member -MemberType NoteProperty -Name 'android' -Value @{}
-          }
-
-          # Expand environment variables
-          $keystorePath = $env:KEYSTORE_PATH
-          $keystorePass = $env:KEYSTORE_PASSWORD
-          $keyAlias = $env:KEY_ALIAS
-          $keyPass = $env:KEY_PASSWORD
-
-          # Build signing object
-          $signing = @{
-            keystorePath = $keystorePath
-            keystorePassword = $keystorePass
-            keyAlias = $keyAlias
-            keyPassword = $keyPass
-          }
-
-          # Assign under bundle.android
-          $json.bundle.android.signing = $signing
-
-          # Write back
-          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
-
-          Write-Host "✅ Android signing config added to tauri.conf.json (bundle.android.signing)"
-          Write-Host "   Keystore path: $keystorePath"
-          Write-Host "   Alias: $keyAlias"
-
-      - name: Debug tauri.conf.json
-        run: Get-Content src-tauri/tauri.conf.json
-
-      - name: Regenerate Android project with correct identifier and signing
-        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
-        shell: pwsh
-        run: |
-          # Update tauri.conf.json version and identifier (preserves existing bundle.android.signing)
+          # Update version and identifier in tauri.conf.json
           $conf = "src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
           $json.version = "${{ inputs.version }}"
@@ -191,52 +163,42 @@ jobs:
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
           Write-Host "Set version=$($json.version), identifier=$($json.identifier)"
 
-          # Delete old Android project if it exists
+          # Remove old Android project and recreate (signing will be applied via env vars at build time)
           if (Test-Path "src-tauri/gen/android") {
             Remove-Item -Recurse -Force "src-tauri/gen/android"
             Write-Host "Removed old gen/android"
           }
 
-          # Initialize fresh Android project (will pick up signing config from bundle.android.signing)
           pnpm tauri android init
-          Write-Host "Android project re-initialized with signing config"
+          Write-Host "Android project re-initialized"
 
-      - name: Debug tauri.conf.json
-        run: Get-Content src-tauri/tauri.conf.json
-
-      # --- Build Android ARMv7 ---
+      # -------------------- Android ARMv7 --------------------
       - name: Build Android ARMv7
         if: inputs.build_android_armv7 == true
         id: build_android_armv7
         continue-on-error: true
-        shell: pwsh
         run: pnpm tauri android build --target armv7
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      - name: Copy Android ARMv7 APK to release folder
+      - name: Copy Android ARMv7 APK
         if: steps.build_android_armv7.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
           Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
 
-      # --- Build Android ARMv8 ---
+      # -------------------- Android ARMv8 --------------------
       - name: Build Android ARMv8
         if: inputs.build_android_armv8 == true
         id: build_android_armv8
         continue-on-error: true
-        shell: pwsh
         run: pnpm tauri android build --target aarch64
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      - name: Copy Android ARMv8 APK to release folder
+      - name: Copy Android ARMv8 APK
         if: steps.build_android_armv8.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path release_artifacts | Out-Null
           Copy-Item "src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk" release_artifacts/ -ErrorAction SilentlyContinue
 
-      # --- Create GitHub Release with all successful artifacts ---
+      # -------------------- Release --------------------
       - name: List collected artifacts
         run: |
           if (Test-Path release_artifacts) {
