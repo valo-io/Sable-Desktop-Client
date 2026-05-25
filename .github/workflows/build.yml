@@ -106,16 +106,35 @@ jobs:
         run: |
           $conf = "src-tauri/tauri.conf.json"
           $json = Get-Content $conf -Raw | ConvertFrom-Json
-          # Add or update Android signing config
-          if (-not $json.tauri.bundle.android) { $json.tauri.bundle.android = @{} }
-          $json.tauri.bundle.android.signing = @{
-            keystorePath = "$env:KEYSTORE_PATH"
-            keystorePassword = "$env:KEYSTORE_PASSWORD"
-            keyAlias = "$env:KEY_ALIAS"
-            keyPassword = "$env:KEY_PASSWORD"
+      
+          # Ensure the path tauri -> bundle -> android exists
+          if ($null -eq $json.tauri) { $json | Add-Member -MemberType NoteProperty -Name 'tauri' -Value @{} }
+          if ($null -eq $json.tauri.bundle) { $json.tauri | Add-Member -MemberType NoteProperty -Name 'bundle' -Value @{} }
+          if ($null -eq $json.tauri.bundle.android) { $json.tauri.bundle | Add-Member -MemberType NoteProperty -Name 'android' -Value @{} }
+      
+          # Expand environment variables for the signing properties
+          $keystorePath = $env:KEYSTORE_PATH
+          $keystorePass = $env:KEYSTORE_PASSWORD
+          $keyAlias = $env:KEY_ALIAS
+          $keyPass = $env:KEY_PASSWORD
+      
+          # Build the signing object with actual values (not $env: references)
+          $signing = @{
+            keystorePath = $keystorePath
+            keystorePassword = $keystorePass
+            keyAlias = $keyAlias
+            keyPassword = $keyPass
           }
+      
+          # Assign the signing config
+          $json.tauri.bundle.android.signing = $signing
+      
+          # Write back the updated JSON
           $json | ConvertTo-Json -Depth 10 | Set-Content $conf
-          Write-Host "Added Android signing config to tauri.conf.json"
+      
+          Write-Host "✅ Android signing config added to tauri.conf.json"
+          Write-Host "   Keystore path: $keystorePath"
+          Write-Host "   Alias: $keyAlias"
 
       # --- Build Windows x64 ---
       - name: Build Windows x64
