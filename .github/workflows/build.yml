@@ -114,7 +114,6 @@ jobs:
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         uses: android-actions/setup-android@v3
 
-      # Update tauri.conf.json and regenerate Android project (no signing config in JSON)
       - name: Regenerate Android project with correct identifier
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         shell: pwsh
@@ -128,70 +127,69 @@ jobs:
 
           if (Test-Path "src-tauri/gen/android") {
             Remove-Item -Recurse -Force "src-tauri/gen/android"
-            Write-Host "Removed old gen/android"
           }
           pnpm tauri android init
           Write-Host "Android project initialized"
 
-      # Set up signing AFTER android init (init generates the files we need to modify)
+      # Signing setup MUST come after android init — init generates build.gradle.kts
       - name: Setup Android signing
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
         shell: pwsh
         env:
-          KEYSTORE_BASE64:    ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD:  ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS:          ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD:       ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEYSTORE_BASE64:   ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD:      ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if (-not $env:KEYSTORE_BASE64) {
             Write-Error "Missing ANDROID_KEYSTORE_BASE64 secret"
             exit 1
           }
 
-          # Decode keystore — use forward slashes so the path is safe in .properties
-          $keystorePath = "$env:RUNNER_TEMP/keystore.jks".Replace('\', '/')
-          [IO.File]::WriteAllBytes(
-            "$env:RUNNER_TEMP\keystore.jks",
-            [Convert]::FromBase64String($env:KEYSTORE_BASE64)
-          )
+          # Decode keystore file — forward slashes are safe cross-platform in .properties
+          $keystoreFile = "$env:RUNNER_TEMP\keystore.jks"
+          [IO.File]::WriteAllBytes($keystoreFile, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          $keystorePath = $keystoreFile.Replace('\', '/')
           Write-Host "Keystore written to $keystorePath"
 
-          # Write keystore.properties next to the Android project root
-          # (Tauri's build.gradle.kts uses rootProject.file("keystore.properties"))
-          $propsContent = @"
+          # Write keystore.properties into the Android project root
+          # rootProject.file("keystore.properties") resolves relative to src-tauri/gen/android/
+          $props = @"
           keyAlias=$($env:KEY_ALIAS)
           password=$($env:KEY_PASSWORD)
           storeFile=$keystorePath
           storePassword=$($env:KEYSTORE_PASSWORD)
           "@
-          Set-Content "src-tauri/gen/android/keystore.properties" $propsContent
+          Set-Content "src-tauri/gen/android/keystore.properties" $props
           Write-Host "keystore.properties written"
 
-          # Patch build.gradle.kts to wire up the signing config
-          # The official Tauri docs require this manual edit:
-          # https://v2.tauri.app/distribute/sign/android/
+          # Patch build.gradle.kts — must add BOTH imports and use .getProperty() not [] casting
           $gradlePath = "src-tauri/gen/android/app/build.gradle.kts"
           $content = Get-Content $gradlePath -Raw
 
-          # 1. Add FileInputStream import if not already present
+          # Add both required imports at the top if not already present
           if ($content -notmatch 'import java\.io\.FileInputStream') {
             $content = "import java.io.FileInputStream`n" + $content
           }
+          if ($content -notmatch 'import java\.util\.Properties') {
+            $content = "import java.util.Properties`n" + $content
+          }
 
-          # 2. Insert signingConfigs block before the buildTypes block
+          # Insert signingConfigs block before buildTypes
+          # Using .getProperty() avoids the "No cast needed" Kotlin DSL compile errors
           $signingBlock = @'
 
           signingConfigs {
               create("release") {
                   val keystorePropertiesFile = rootProject.file("keystore.properties")
-                  val keystoreProperties = java.util.Properties()
+                  val keystoreProperties = Properties()
                   if (keystorePropertiesFile.exists()) {
                       keystoreProperties.load(FileInputStream(keystorePropertiesFile))
                   }
-                  keyAlias     = keystoreProperties["keyAlias"]     as String
-                  keyPassword  = keystoreProperties["password"]     as String
-                  storeFile    = file(keystoreProperties["storeFile"] as String)
-                  storePassword = keystoreProperties["storePassword"] as String
+                  keyAlias      = keystoreProperties.getProperty("keyAlias")
+                  keyPassword   = keystoreProperties.getProperty("password")
+                  storeFile     = file(keystoreProperties.getProperty("storeFile"))
+                  storePassword = keystoreProperties.getProperty("storePassword")
               }
           }
 
@@ -201,13 +199,17 @@ jobs:
             $content = $content -replace '(\s*buildTypes\s*\{)', "$signingBlock`$1"
           }
 
-          # 3. Wire signingConfig into the release buildType
+          # Wire signingConfig into the release buildType
           if ($content -notmatch 'signingConfig\s*=\s*signingConfigs') {
             $content = $content -replace '(getByName\("release"\)\s*\{)', "`$1`n            signingConfig = signingConfigs.getByName(`"release`")"
           }
 
           Set-Content $gradlePath $content
-          Write-Host "build.gradle.kts patched with signing config"
+          Write-Host "build.gradle.kts patched"
+
+          # Print result for debugging
+          Write-Host "--- build.gradle.kts ---"
+          Get-Content $gradlePath
 
       # -------------------- Android ARMv7 --------------------
       - name: Build Android ARMv7
