@@ -145,6 +145,28 @@ jobs:
             pnpm tauri android init
           }
 
+      - name: Regenerate Android project with correct identifier
+        if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
+        shell: pwsh
+        run: |
+          # Update tauri.conf.json with version and identifier
+          $conf = "src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          $json.version = "${{ inputs.version }}"
+          $json.identifier = "${{ inputs.app_id }}"
+          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
+          Write-Host "Set version=$($json.version), identifier=$($json.identifier)"
+      
+          # Delete old Android project if it exists
+          if (Test-Path "src-tauri/gen/android") {
+            Remove-Item -Recurse -Force "src-tauri/gen/android"
+            Write-Host "Removed old gen/android"
+          }
+      
+          # Initialize fresh Android project
+          pnpm tauri android init
+          Write-Host "Android project re-initialized"
+          
       # --- Build Android ARMv7 ---
       - name: Build Android ARMv7
         if: inputs.build_android_armv7 == true
@@ -152,15 +174,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $conf = "src-tauri/tauri.conf.json"
-          $json = Get-Content $conf -Raw | ConvertFrom-Json
-          # Set version and Android identifier
-          $json.version = "${{ inputs.version }}"
-          $json.identifier = "${{ inputs.app_id }}"
-          # Save back
-          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
-          Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
-          # Build for armeabi-v7a
           pnpm tauri android build --target armv7
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
@@ -183,12 +196,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $conf = "src-tauri/tauri.conf.json"
-          $json = Get-Content $conf -Raw | ConvertFrom-Json
-          $json.version = "${{ inputs.version }}"
-          $json.identifier = "${{ inputs.app_id }}"
-          $json | ConvertTo-Json -Depth 10 | Set-Content $conf
-          Write-Host "Updated tauri.conf.json: version=$($json.version), identifier=$($json.identifier)"
           pnpm tauri android build --target aarch64
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
