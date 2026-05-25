@@ -131,6 +131,11 @@ jobs:
           pnpm tauri android init
           Write-Host "Android project initialized"
 
+          # Force Kotlin in-process compilation — avoids daemon "different roots" crash
+          # that occurs when cargo registry (C:\) and project (D:\) are on different drives
+          Add-Content "src-tauri/gen/android/gradle.properties" "`nkotlin.compiler.execution.strategy=in-process"
+          Write-Host "Kotlin daemon disabled (in-process strategy forced)"
+
       # Signing setup MUST come after android init — init generates build.gradle.kts
       - name: Setup Android signing
         if: inputs.build_android_armv7 == true || inputs.build_android_armv8 == true
