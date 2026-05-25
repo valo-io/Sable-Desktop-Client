@@ -1,4 +1,4 @@
-name: Publish Artifact to Release
+name: Publish All Artifacts to Release
 
 on:
   workflow_dispatch:
@@ -25,20 +25,41 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # Needed to create releases
-      actions: read     # Needed to download artifacts
+      contents: write
+      actions: read
 
     steps:
       - name: Download all artifacts from workflow run
         uses: actions/download-artifact@v4
         with:
-          pattern: '*'                     # Download every artifact from the run
-          path: ./artifacts                # Each artifact goes into its own subfolder
+          pattern: '*'
+          path: ./artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.run_id }}
 
-      - name: List downloaded files (debug)
+      - name: List downloaded artifacts (debug)
         run: ls -laR ./artifacts
+
+      - name: Prepare assets with artifact name prefix
+        run: |
+          mkdir -p ./assets
+          for artifact_dir in ./artifacts/*/; do
+            if [ -d "$artifact_dir" ]; then
+              artifact_name=$(basename "$artifact_dir")
+              echo "Processing artifact: $artifact_name"
+              find "$artifact_dir" -type f | while read -r file; do
+                relative_path="${file#$artifact_dir}"
+                relative_path="${relative_path#/}"
+                # Replace any path separators with underscores to flatten
+                flat_name="${relative_path//\//_}"
+                new_name="${artifact_name}_${flat_name}"
+                cp "$file" "./assets/$new_name"
+                echo "  -> $new_name"
+              done
+            fi
+          done
+          echo "=== Final assets ==="
+          ls -la ./assets
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -46,7 +67,7 @@ jobs:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.release_title || inputs.tag_name }}
           prerelease: ${{ inputs.prerelease }}
-          files: ./artifacts/**/*          # Upload all files from all artifacts
+          files: ./assets/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
